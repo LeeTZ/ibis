@@ -69,18 +69,41 @@ def test_basic_window(client):
 
 
 def test_cumulative_window(client):
+    table = client.table('time_indexed_table')
+    context = (
+        pd.Timestamp('20170102 06:00:00', tz='UTC'),
+        pd.Timestamp('20170103', tz='UTC'),
+    )
+    window = ibis.cumulative_window(order_by='time', group_by='key')
+    result = table.mutate(
+        count_cum=table['value'].mean().over(window)
+    ).compile(timecontext=context)
+    result_pd = result.toPandas()
+    df = table.compile().toPandas()
+    df = df[df.time.between(*(t.tz_convert(None) for t in context))]
+    expected_cum_win = (
+        df.set_index('time')
+        .groupby('key')
+        .value.rolling('2d', closed='both')
+        .mean()
+        .rename('count_cum')
+    )
+
+    df = df.set_index('time')
+    df = df.assign(
+        count_cum=expected_cum_win.sort_index(
+            level=['time', 'key']
+        ).reset_index(level='key', drop=True)
+    )
+    expected = df.sort_values(by=['key', 'time']).reset_index()
+    tm.assert_frame_equal(result_pd, expected)
+
+
+def test_complex_window(client):
     # table = client.table('time_indexed_table')
     # context = (
     #     pd.Timestamp('20170102 06:00:00', tz='UTC'),
     #     pd.Timestamp('20170103', tz='UTC'),
     # )
     # window = ibis.cumulative_window(order_by='time', group_by='key')
-    # result = table.mutate(
-    #     count_cum=table['value'].count().over(window)
-    # ).compile(timecontext=context)
-    # result_pd = result.toPandas()
-    pass
-
-
-def test_complex_window(client):
     pass
