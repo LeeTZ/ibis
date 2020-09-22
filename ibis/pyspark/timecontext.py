@@ -31,7 +31,6 @@ def filter_by_time_context(df, timecontext):
     """
     if not timecontext:
         return df
-
     begin, end = timecontext
     if TIME_COL in df.columns:
         return df.filter((F.col(TIME_COL) >= begin) & (F.col(TIME_COL) < end))
@@ -41,3 +40,9 @@ def filter_by_time_context(df, timecontext):
             "To use time context, a Timestamp column name 'time' must"
             "present in the table. ".format(df)
         )
+
+
+def union_time_context(timecontexts):
+    begin = min(context[0] for context in timecontexts)
+    end = max(context[1] for context in timecontexts)
+    return begin, end
