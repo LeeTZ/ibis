@@ -8,11 +8,14 @@ from pyspark.sql import Window
 from pyspark.sql.functions import PandasUDFType, pandas_udf
 
 import ibis.common.exceptions as com
+import ibis.expr.api as ir
 import ibis.expr.datatypes as dtypes
 import ibis.expr.operations as ops
 import ibis.expr.types as types
 from ibis import interval
+from ibis.pandas.execution import execute
 from ibis.pyspark.operations import PySparkTable
+from ibis.pyspark.timecontext import filter_by_time_context
 from ibis.spark.compiler import SparkContext, SparkDialect
 from ibis.spark.datatypes import (
     ibis_array_dtype_to_spark_dtype,
@@ -85,7 +88,7 @@ dialect = PySparkDialect
 def compile_datasource(t, expr, scope, timecontext):
     op = expr.op()
     name, _, client = op.args
-    return client._session.table(name)
+    return filter_by_time_context(client._session.table(name), timecontext)
 
 
 @compiles(ops.SQLQueryResult)
@@ -367,9 +370,6 @@ def compile_aggregator(
     col = fn(src_col)
     if context in (AggregationContext.ENTIRE, AggregationContext.GROUP):
         return col
-    elif context == AggregationContext.WINDOW:
-        window = kwargs['window']
-        return col.over(window)
     else:
         # We are trying to compile a expr such as some_col.max()
         # to a Spark expression.
@@ -1047,33 +1047,57 @@ def compile_window_op(t, expr, scope, timecontext, **kwargs):
     ]
 
     order_by = window._order_by
+
     ordering_keys = [
-        key.to_expr().get_name()
+        F.col(key.to_expr().get_name()).cast('long')
+        if isinstance(key.args[0], types.TimestampColumn)
+        else key.to_expr().get_name()
         for key in map(operator.methodcaller('op'), order_by)
     ]
 
-    context = AggregationContext.WINDOW
+    context = AggregationContext.GROUP
     pyspark_window = Window.partitionBy(grouping_keys).orderBy(ordering_keys)
 
     # If the operand is a shift op (e.g. lead, lag), Spark will set the window
     # bounds. Only set window bounds here if not a shift operation.
     if not isinstance(operand.op(), ops.ShiftBase):
-        start = (
-            -window.preceding
-            if window.preceding is not None
-            else Window.unboundedPreceding
-        )
-        end = (
-            window.following
-            if window.following is not None
-            else Window.unboundedFollowing
-        )
-        pyspark_window = pyspark_window.rowsBetween(start, end)
+        if window.preceding is None:
+            start = Window.unboundedPreceding
+        elif isinstance(window.preceding, ir.IntervalScalar):
+            preceding = execute(window.preceding)
+            start = -int(preceding.value / 1e9)
+        elif isinstance(window.preceding, int):
+            start = -window.preceding
+        else:
+            raise com.UnsupportedOperationError(
+                'preceding type {}is not supported in windowing'.format(
+                    type(window.preceding)
+                )
+            )
 
-    result = t.translate(
-        operand, scope, timecontext, window=pyspark_window, context=context
+        if window.following is None:
+            end = Window.unboundedFollowing
+        elif isinstance(window.following, ir.IntervalScalar):
+            following = execute(window.following)
+            end = int(following.value / 1e9)
+        elif isinstance(window.following, int):
+            end = window.following
+        else:
+            raise com.UnsupportedOperationError(
+                'following type {}is not supported in windowing'.format(
+                    type(window.following)
+                )
+            )
+
+        if isinstance(window.preceding, ir.IntervalScalar):
+            pyspark_window = pyspark_window.rangeBetween(start, end)
+        else:
+            pyspark_window = pyspark_window.rowsBetween(start, end)
+
+    # TODO: fix context in compile_aggregator
+    result = t.translate(operand, scope, timecontext, context=context).over(
+        pyspark_window
     )
-
     return result
 
 

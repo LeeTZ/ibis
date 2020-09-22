@@ -3,6 +3,7 @@ from pyspark.sql.column import Column
 import ibis.common.exceptions as com
 import ibis.expr.types as types
 from ibis.expr.scope import Scope, make_scope
+from ibis.expr.timecontext import canonicalize_context
 from ibis.pyspark.compiler import PySparkDialect, PySparkExprTranslator
 from ibis.pyspark.operations import PySparkTable
 from ibis.spark.client import SparkClient
@@ -34,6 +35,9 @@ class PySparkClient(SparkClient):
                     for param, raw_value in params.items()
                 ]
             )
+        if timecontext is not None:
+            # convert timecontext to datetime type
+            timecontext = canonicalize_context(timecontext)
         return self.translator.translate(
             expr, scope=scope, timecontext=timecontext
         )
